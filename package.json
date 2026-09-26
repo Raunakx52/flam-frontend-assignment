@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"vite\" \"node server/index.js\"",
-    "start": "concurrently \"vite --host 0.0.0.0\" \"node server/index.js\"",
+    "start": "npm run build && node server/index.js",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "server": "node server/index.js"
