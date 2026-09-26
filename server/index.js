@@ -1,9 +1,15 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
+import path from 'path'
+import { fileURLToPath } from 'url'
 
 const app = express()
 const port = Number(process.env.PORT || 8787)
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+const distPath = path.resolve(__dirname, '../dist')
 
 app.use(cors())
 app.use(express.json({ limit: '64kb' }))
@@ -34,7 +40,7 @@ const shape = `{
   }
 }`
 
-const systemPrompt = `You generate structured data for a study-assistant interface. Return exactly one valid JSON object and nothing else. Do not use markdown fences, prose outside JSON, null, undefined, or trailing commas. Match this shape exactly:
+const systemPrompt = `You generate structured data for a study-assistant interface. Return exactly one valid JSON object and nothing else. Do not use markdown fences, prose outside JSON, null, undefined, or trailing commas. Match this shape:
 ${shape}
 Rules:
 - title and summary must be useful and concise.
@@ -72,7 +78,10 @@ async function streamModel(messages, res) {
   const config = providerConfig()
 
   if (!config) {
-    res.status(500).json({ error: 'LLM configuration is missing. Add LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL to .env.' })
+    res.status(500).json({
+      error:
+        'LLM configuration is missing. Add LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL to .env.'
+    })
     return
   }
 
@@ -86,76 +95,123 @@ async function streamModel(messages, res) {
   const timeout = setTimeout(() => controller.abort(), 55000)
 
   try {
-    const response = await fetch(`${config.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-  model: config.model,
-  messages,
-  temperature: 0.2,
-  stream: true,
-  response_format: {
-    type: 'json_object'
-  }
-}),
-      signal: controller.signal
-    })
+    const response = await fetch(
+      `${config.baseUrl}/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: config.model,
+          messages,
+          temperature: 0.2,
+          stream: true,
+          response_format: {
+            type: 'json_object'
+          }
+        }),
+        signal: controller.signal
+      }
+    )
 
     if (!response.ok) {
       const details = await response.text()
+
       writeEvent(res, {
         type: 'error',
-        message: details || `LLM provider returned ${response.status}.`
+        message:
+          details ||
+          `LLM provider returned ${response.status}.`
       })
+
       res.end()
       return
     }
 
     if (!response.body) {
-      writeEvent(res, { type: 'error', message: 'The LLM provider returned an empty stream.' })
+      writeEvent(res, {
+        type: 'error',
+        message: 'The LLM provider returned an empty stream.'
+      })
+
       res.end()
       return
     }
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
+
     let buffer = ''
 
     const processLine = line => {
       const trimmed = line.trim()
-      if (!trimmed.startsWith('data:')) return
+
+      if (!trimmed.startsWith('data:')) {
+        return
+      }
+
       const payload = trimmed.slice(5).trim()
-      if (!payload || payload === '[DONE]') return
+
+      if (!payload || payload === '[DONE]') {
+        return
+      }
 
       let parsed
+
       try {
         parsed = JSON.parse(payload)
       } catch {
-        throw new Error('The LLM provider returned a malformed stream event.')
+        throw new Error(
+          'The LLM provider returned a malformed stream event.'
+        )
       }
 
-      const text = parsed?.choices?.[0]?.delta?.content
-      if (typeof text === 'string' && text.length > 0) {
-        writeEvent(res, { type: 'delta', text })
+      const text =
+        parsed?.choices?.[0]?.delta?.content
+
+      if (
+        typeof text === 'string' &&
+        text.length > 0
+      ) {
+        writeEvent(res, {
+          type: 'delta',
+          text
+        })
       }
     }
 
     while (true) {
       const { value, done } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
+
+      if (done) {
+        break
+      }
+
+      buffer += decoder.decode(value, {
+        stream: true
+      })
+
       const lines = buffer.split('\n')
+
       buffer = lines.pop() || ''
-      for (const line of lines) processLine(line)
+
+      for (const line of lines) {
+        processLine(line)
+      }
     }
 
     buffer += decoder.decode()
-    if (buffer.trim()) processLine(buffer)
 
-    writeEvent(res, { type: 'done' })
+    if (buffer.trim()) {
+      processLine(buffer)
+    }
+
+    writeEvent(res, {
+      type: 'done'
+    })
+
     res.end()
   } catch (error) {
     const message = controller.signal.aborted
@@ -163,7 +219,12 @@ async function streamModel(messages, res) {
       : error instanceof Error
         ? error.message
         : 'The LLM provider request failed.'
-    writeEvent(res, { type: 'error', message })
+
+    writeEvent(res, {
+      type: 'error',
+      message
+    })
+
     res.end()
   } finally {
     clearTimeout(timeout)
@@ -171,25 +232,38 @@ async function streamModel(messages, res) {
 }
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, configured: Boolean(providerConfig()) })
+  res.json({
+    ok: true,
+    configured: Boolean(providerConfig())
+  })
 })
 
 app.post('/api/generate', async (req, res) => {
-  const input = typeof req.body?.input === 'string' ? req.body.input.trim() : ''
+  const input =
+    typeof req.body?.input === 'string'
+      ? req.body.input.trim()
+      : ''
 
   if (input.length < 3) {
-    res.status(400).json({ error: 'Please provide a topic or notes.' })
+    res.status(400).json({
+      error: 'Please provide a topic or notes.'
+    })
     return
   }
 
   if (input.length > 12000) {
-    res.status(400).json({ error: 'Input is too long.' })
+    res.status(400).json({
+      error: 'Input is too long.'
+    })
     return
   }
 
   await streamModel(
     [
-      { role: 'system', content: systemPrompt },
+      {
+        role: 'system',
+        content: systemPrompt
+      },
       {
         role: 'user',
         content: `Create a complete study kit from the material inside <source> tags.\n<source>\n${input}\n</source>`
@@ -200,41 +274,89 @@ app.post('/api/generate', async (req, res) => {
 })
 
 app.post('/api/refine', async (req, res) => {
-  const instruction = typeof req.body?.instruction === 'string' ? req.body.instruction.trim() : ''
+  const instruction =
+    typeof req.body?.instruction === 'string'
+      ? req.body.instruction.trim()
+      : ''
+
   const current = req.body?.current
 
   if (!instruction) {
-    res.status(400).json({ error: 'A refinement instruction is required.' })
+    res.status(400).json({
+      error: 'A refinement instruction is required.'
+    })
     return
   }
 
   if (instruction.length > 1000) {
-    res.status(400).json({ error: 'Refinement instruction is too long.' })
+    res.status(400).json({
+      error: 'Refinement instruction is too long.'
+    })
     return
   }
 
-  if (!current || typeof current !== 'object' || Array.isArray(current)) {
-    res.status(400).json({ error: 'The current study kit is required.' })
+  if (
+    !current ||
+    typeof current !== 'object' ||
+    Array.isArray(current)
+  ) {
+    res.status(400).json({
+      error: 'The current study kit is required.'
+    })
     return
   }
 
   await streamModel(
     [
-      { role: 'system', content: systemPrompt },
+      {
+        role: 'system',
+        content: systemPrompt
+      },
       {
         role: 'user',
-        content: `Revise the existing study kit using the instruction inside <instruction> tags. Preserve useful unchanged content and return the full updated JSON object.\n<instruction>\n${instruction}\n</instruction>\n<current>\n${JSON.stringify(current)}\n</current>`
+        content: `Revise the existing study kit using the instruction inside <instruction> tags. Preserve useful unchanged content and return the full updated JSON object.\n<instruction>\n${instruction}\n</instruction>\n<current>\n${JSON.stringify(
+          current
+        )}\n</current>`
       }
     ],
     res
   )
 })
 
+app.use(express.static(distPath))
+
+app.use((req, res, next) => {
+  if (
+    req.method === 'GET' &&
+    !req.path.startsWith('/api/')
+  ) {
+    res.sendFile(
+      path.join(distPath, 'index.html'),
+      error => {
+        if (error) {
+          next(error)
+        }
+      }
+    )
+    return
+  }
+
+  next()
+})
+
 app.use((error, _req, res, _next) => {
-  const message = error instanceof Error ? error.message : 'Server error.'
-  res.status(500).json({ error: message })
+  const message =
+    error instanceof Error
+      ? error.message
+      : 'Server error.'
+
+  res.status(500).json({
+    error: message
+  })
 })
 
 app.listen(port, () => {
-  process.stdout.write(`StudyForge server running on http://localhost:${port}\n`)
+  process.stdout.write(
+    `StudyForge server running on http://localhost:${port}\n`
+  )
 })
